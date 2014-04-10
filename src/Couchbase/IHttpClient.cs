@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.IO;
+using System.Net;
 
 namespace Couchbase
 {
@@ -21,6 +22,8 @@ namespace Couchbase
 	public interface IHttpResponse
 	{
 		Stream GetResponseStream();
+
+        HttpStatusCode StatusCode { get; }
 	}
 
 	/// <summary>

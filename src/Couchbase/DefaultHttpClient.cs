@@ -1,76 +1,79 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Configuration;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Net;
 using System.IO;
+using System.Threading;
 
 namespace Couchbase
 {
-	public class DefaultHttpClient : IHttpClient
-	{
-		private static readonly Enyim.Caching.ILog log = Enyim.Caching.LogManager.GetLogger(typeof(DefaultHttpClient));
-		private const int DEFAULT_RETRY_COUNT = 3;
+    public class DefaultHttpClient : IHttpClient
+    {
+        private static readonly Enyim.Caching.ILog log = Enyim.Caching.LogManager.GetLogger(typeof(DefaultHttpClient));
+        private const int DEFAULT_RETRY_COUNT = 3;
 
-		private readonly WebClientWithTimeout client;
-		
-		public DefaultHttpClient(Uri baseUri, string username, string password, TimeSpan timeout, bool shouldInitConnection)
-		{
-			client = new WebClientWithTimeout();
-			client.BaseAddress = baseUri.AbsoluteUri;
-			client.Timeout = (int)timeout.TotalMilliseconds;
-			client.ReadWriteTimeout = client.Timeout;
+        private readonly WebClientWithTimeout client;
 
-			if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(password))
-			{
-				client.Credentials = new NetworkCredential(username, password);
-			}
+        public DefaultHttpClient(Uri baseUri, string username, string password, TimeSpan timeout, bool shouldInitConnection)
+        {
+            client = new WebClientWithTimeout();
+            client.BaseAddress = baseUri.AbsoluteUri;
+            client.Timeout = (int)timeout.TotalMilliseconds;
+            client.ReadWriteTimeout = client.Timeout;
+
+            if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(password))
+            {
+                client.Credentials = new NetworkCredential(username, password);
+            }
 
 #if ! MONO
-			ServicePointManager.FindServicePoint(baseUri).SetTcpKeepAlive(true, 300, 30);
+            ServicePointManager.FindServicePoint(baseUri).SetTcpKeepAlive(true, 300, 30);
 #endif
 
-			//The first time a request is made to a URI, the ServicePointManager
-			//will create a ServicePoint to manage connections to a particular host
-			//This process is expensive and slows down the first created view.
-			//The call to BeginRequest is basically an async, no-op HTTP request to
-			//initialize the ServicePoint before the first view request is made.
-			if (shouldInitConnection) client.DownloadStringAsync(baseUri);
-		}
+            //The first time a request is made to a URI, the ServicePointManager
+            //will create a ServicePoint to manage connections to a particular host
+            //This process is expensive and slows down the first created view.
+            //The call to BeginRequest is basically an async, no-op HTTP request to
+            //initialize the ServicePoint before the first view request is made.
+            if (shouldInitConnection) client.DownloadStringAsync(baseUri);
+        }
 
-		public IHttpRequest CreateRequest(string path)
-		{
-			return new DefaultHttpRequestWrapper(this.client, path);
-		}
+        public IHttpRequest CreateRequest(string path)
+        {
+            return new DefaultHttpRequestWrapper(this.client, path);
+        }
 
-		private int retryCount = DEFAULT_RETRY_COUNT;
+        private int retryCount = DEFAULT_RETRY_COUNT;
 
-		int IHttpClient.RetryCount
-		{
-			get { return retryCount; }
-			set { retryCount = value; }
-		}
+        int IHttpClient.RetryCount
+        {
+            get { return retryCount; }
+            set { retryCount = value; }
+        }
 
-		#region [ DefaultHttpRequestWrapper        ]
+        #region [ DefaultHttpRequestWrapper        ]
 
-		private class DefaultHttpRequestWrapper : IHttpRequest
-		{
-			private HttpWebRequestWrapper httpWebRequestWrapper;
-			private HttpMethod method;
-			
-			public DefaultHttpRequestWrapper(WebClientWithTimeout client, string path)
-			{
-				this.method = HttpMethod.Post;
-				httpWebRequestWrapper = HttpWebRequestWrapper.Create(client, path);
-			}
+        private class DefaultHttpRequestWrapper : IHttpRequest
+        {
+            private HttpWebRequestWrapper httpWebRequestWrapper;
+            private HttpMethod method;
 
-			void IHttpRequest.AddParameter(string name, string value)
-			{
-				httpWebRequestWrapper.RequestParams.Add(name, value);
-			}
+            public DefaultHttpRequestWrapper(WebClientWithTimeout client, string path)
+            {
+                this.method = HttpMethod.Post;
+                httpWebRequestWrapper = HttpWebRequestWrapper.Create(client, path);
+            }
 
-			IHttpResponse IHttpRequest.GetResponse(string postData = null)
-			{
+            void IHttpRequest.AddParameter(string name, string value)
+            {
+                httpWebRequestWrapper.RequestParams.Add(name, value);
+            }
+
+            IHttpResponse IHttpRequest.GetResponse(string postData = null)
+            {
                 //if (this.method != HttpMethod.Get)
                 //{ 
                 //    //view queries are all GETs
@@ -89,121 +92,146 @@ namespace Couchbase
                 var response = new DefaultHttpResponseWrapper(request);
                 response.Execute();
                 return response;
-                
-			}
 
-			HttpMethod IHttpRequest.Method
-			{
-				get { return this.method; }
-				set { this.method = value; }
-			}
-		}
+            }
 
-		#endregion
+            HttpMethod IHttpRequest.Method
+            {
+                get { return this.method; }
+                set { this.method = value; }
+            }
+        }
 
-		#region [ DefaultHttpResponseWrapper       ]
+        #endregion
 
-		private class DefaultHttpResponseWrapper : IHttpResponse
-		{
-			private HttpWebRequest request;
-			private HttpWebResponse response;
+        #region [ DefaultHttpResponseWrapper       ]
 
-			public DefaultHttpResponseWrapper(HttpWebRequest request)
-			{
-				this.request = request;
-			}
+        private class DefaultHttpResponseWrapper : IHttpResponse
+        {
+            private HttpWebRequest request;
+            private HttpWebResponse response;
 
-			public void Execute()
-			{
-				try
-				{
-					this.response = request.GetResponse() as HttpWebResponse;
-				}
-				catch (WebException ex) 
-				{
-					//if the view isn't found for example, we still want 
-					//to read the JSON response from the server
-					//{"error":"not_found","reason":"Design document _design/breweries not found"}
-					this.response = ex.Response as HttpWebResponse;
-				}
-			}
+            public DefaultHttpResponseWrapper(HttpWebRequest request)
+            {
+                this.request = request;
+            }
 
-			Stream IHttpResponse.GetResponseStream()
-			{
-				if (response == null)
-				{
-					throw new InvalidOperationException(
-						"This object does not have a response " +
-						"(perhaps the request failed without an HTTP response)");
-				}
-				return this.response.GetResponseStream();
-			}
-		}
+            public void Execute()
+            {
+                const int maxRetries = 2;
+                var retries = 0;
 
-		#endregion
+                if (TryExecute())
+                {
+                    var retry = false;
+                    do
+                    {
+                        var timeout = (int)Math.Pow(2, retries);
+                        Thread.Sleep(timeout);
+                        retry = TryExecute();
+                    } while (retry && retries++ < maxRetries);
+                }
+                if (response != null)
+                {
+                    StatusCode = response.StatusCode;
+                }
+            }
 
-		#region [ HttpWebRequestWrapper       ]
-		/// <summary>
-		/// WebClientWithTimeout and its base WebClient
-		/// do not alow for params to be set after
-		/// instantiation.  This wrapper will allow for 
-		/// that scenario.
-		/// </summary>
-		private class HttpWebRequestWrapper
-		{
-			private HttpWebRequestWrapper() { }
+            bool TryExecute()
+            {
+                var retry = false;
+                try
+                {
+                    response = request.GetResponse() as HttpWebResponse;
+                }
+                catch (WebException ex)
+                {
+                    log.Warn(ex);
 
-			private string path;
-			private WebClientWithTimeout client;
+                    response = ex.Response as HttpWebResponse;
+                    retry = response == null; //if response exists, let the retry happen later
+                }
+                return retry;
+            }
 
-			public HttpWebRequest Request { get; set; }
+            Stream IHttpResponse.GetResponseStream()
+            {
+                if (response == null)
+                {
+                    throw new InvalidOperationException(
+                        "This object does not have a response " +
+                        "(perhaps the request failed without an HTTP response)");
+                }
+                return this.response.GetResponseStream();
+            }
 
-			private Dictionary<string, string> requestParams = new Dictionary<string, string>();
-			public Dictionary<string, string> RequestParams
-			{
-				get { return requestParams; }
-			}
+            public HttpStatusCode StatusCode { get; private set; }
+        }
 
-			public HttpWebRequest GetWebRequest()
-			{
-				var queryString = "?";
-				var select = requestParams.Select(kv =>
-				{
-					return kv.Key + "=" + kv.Value;
-				});
+        #endregion
+
+        #region [ HttpWebRequestWrapper       ]
+        /// <summary>
+        /// WebClientWithTimeout and its base WebClient
+        /// do not alow for params to be set after
+        /// instantiation.  This wrapper will allow for 
+        /// that scenario.
+        /// </summary>
+        private class HttpWebRequestWrapper
+        {
+            private HttpWebRequestWrapper() { }
+
+            private string path;
+            private WebClientWithTimeout client;
+
+            public HttpWebRequest Request { get; set; }
+
+            private Dictionary<string, string> requestParams = new Dictionary<string, string>();
+            public Dictionary<string, string> RequestParams
+            {
+                get { return requestParams; }
+            }
+
+            public HttpWebRequest GetWebRequest()
+            {
+                var queryString = "?";
+                var select = requestParams.Select(kv =>
+                {
+                    return kv.Key + "=" + kv.Value;
+                });
 #if NET35
 				queryString += string.Join("&", select.ToArray());
 #else
-				queryString += string.Join("&", select);
+                queryString += string.Join("&", select);
 #endif
-				lock (client)
-				{
-					var uri = new Uri(client.BaseAddress + "/" + path /*+ queryString*/);
-					var request = client.GetWebRequest(uri, client.BaseAddress.GetHashCode().ToString()) as HttpWebRequest;
-					request.Accept = "application/json";
-					request.ContentType = "application/json; charset=utf-8";
-					return request;
-				}
-			}
+                lock (client)
+                {
+                    var uri = new Uri(client.BaseAddress + "/" + path /*+ queryString*/);
+                    var request = client.GetWebRequest(uri, client.BaseAddress.GetHashCode().ToString()) as HttpWebRequest;
+                    request.Accept = "application/json";
+                    request.ContentType = "application/json; charset=utf-8";
+                    return request;
+                }
+            }
 
-			internal static HttpWebRequestWrapper Create(WebClientWithTimeout client, string path)
-			{
-				return new HttpWebRequestWrapper { client = client, path = path };
-			}
-		}
+            internal static HttpWebRequestWrapper Create(WebClientWithTimeout client, string path)
+            {
+                return new HttpWebRequestWrapper { client = client, path = path };
+            }
+        }
 
-		#endregion
-	}
+        #endregion
+    }
 
-	public class DefaultHttpClientFactory : IHttpClientFactory
-	{
-		public static readonly IHttpClientFactory Instance = new DefaultHttpClientFactory();
+    public class DefaultHttpClientFactory : IHttpClientFactory
+    {
+        public static readonly IHttpClientFactory Instance = new DefaultHttpClientFactory();
 
-		public IHttpClient Create(Uri baseUri, string username, string password, TimeSpan timeout, bool shouldInitializeConnection)
-		{
-			return new DefaultHttpClient(baseUri, username, password, timeout, shouldInitializeConnection);
-		}
-	}
+        public IHttpClient Create(Uri baseUri, string username, string password, TimeSpan timeout, bool shouldInitializeConnection)
+        {
+            return new DefaultHttpClient(baseUri, username, password, timeout, shouldInitializeConnection);
+        }
+    }
 }
 
 /**
