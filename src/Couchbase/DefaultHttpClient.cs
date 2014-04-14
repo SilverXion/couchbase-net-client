@@ -80,15 +80,16 @@ namespace Couchbase
                 //    throw new ArgumentOutOfRangeException(this.method + " is not currently supported");
                 //}
                 var request = httpWebRequestWrapper.GetWebRequest();
-                request.Method = this.method.ToString();
                 if (!string.IsNullOrEmpty(postData))
                 {
+                    request.Method = this.method.ToString();
                     using (var requestStream = request.GetRequestStream())
                     {
                         var bytesToWrite = Encoding.UTF8.GetBytes(postData);
                         requestStream.Write(bytesToWrite, 0, bytesToWrite.Length);
                     }
-                }
+                }              
+                
                 var response = new DefaultHttpResponseWrapper(request);
                 response.Execute();
                 return response;
