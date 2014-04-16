@@ -371,11 +371,14 @@ namespace Couchbase
                     {
                         key = HttpUtility.UrlEncode(key);
                         value = HttpUtility.UrlEncode(value);
-                    }
-                    request.AddParameter(key, value);
+                    } 
+                    if (key == "keys" && request.Method == HttpMethod.Post)
+                        postData = "{\"" + key + "\":" + value + "}";
+                    else
+                        request.AddParameter(key, value);
                 }
-                if (request.Method == HttpMethod.Post)
-                    postData = "{" + String.Join(",", viewParams.Select(p => "\"" + (p.Key == "key" ? "keys" : p.Key) + "\":" + (p.Key == "key" ? "[" + p.Value + "]" : p.Value))) + "}";
+                //if (request.Method == HttpMethod.Post)
+                //    postData = "{" + String.Join(",", viewParams.Select(p => "\"" + (p.Key == "key" ? "keys" : p.Key) + "\":" + (p.Key == "key" ? "[" + p.Value + "]" : p.Value))) + "}";
             }
 
             return request.GetResponse(postData);
